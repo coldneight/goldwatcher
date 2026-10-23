@@ -849,6 +849,8 @@ impl eframe::App for GoldWatcherApp {
         self.layout_mode = LayoutMode::for_size(screen.x - 44.0, screen.y - 28.0);
         if self.layout_mode != LayoutMode::TwoColumn {
             self.show_alert_drawer = false;
+        } else if std::env::var_os("GOLDWATCHER_OPEN_ALERTS").is_some() {
+            self.show_alert_drawer = true;
         }
 
         egui::CentralPanel::default()
@@ -920,18 +922,6 @@ impl GoldWatcherApp {
             return;
         }
         let screen = ctx.screen_rect();
-        let backdrop = egui::Area::new(Id::new("alerts-backdrop"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
-                ui.painter()
-                    .rect_filled(rect, 0.0, Color32::from_black_alpha(100));
-                response
-            });
-        if backdrop.inner.clicked() {
-            self.show_alert_drawer = false;
-        }
         let width = 370.0_f32.min(screen.width() - 24.0);
         let height = (screen.height() - 96.0).max(420.0);
         egui::Area::new(Id::new("alerts-drawer"))
