@@ -13,8 +13,8 @@ use crate::alerts;
 use crate::data::{FeedEvent, FeedSnapshot, FeedWorker, HistoryPayload};
 use crate::model::{
     beijing_tz, fmt_num, fmt_pct, format_threshold, now_beijing, Alert, AlertMetric, AlertScope,
-    AppConfig, ChartWindow, Direction, FxRates, HistoryStore, MarketId, MarketMetrics, PricePoint,
-    Quote, SessionAlert, SessionId,
+    AppConfig, ChartStyle, ChartWindow, Direction, FxRates, HistoryStore, MarketId, MarketMetrics,
+    PricePoint, Quote, SessionAlert, SessionId,
 };
 use crate::notify;
 use crate::storage::{self, Paths};
