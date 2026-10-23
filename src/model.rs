@@ -499,6 +499,37 @@ impl MarketMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ChartStyle {
+    #[default]
+    Area,
+    Line,
+    Baseline,
+    Average,
+}
+
+impl ChartStyle {
+    pub const ALL: [Self; 4] = [Self::Area, Self::Line, Self::Baseline, Self::Average];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Area => "面积",
+            Self::Line => "折线",
+            Self::Baseline => "涨跌",
+            Self::Average => "均线",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Area => "渐变面积图，突出趋势",
+            Self::Line => "纯折线，减少视觉干扰",
+            Self::Baseline => "以昨收为基准，涨绿跌红",
+            Self::Average => "价格线叠加 5 / 20 分钟均线",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChartWindow {
     Hour1,
     #[default]
@@ -837,6 +868,8 @@ pub struct AppConfig {
     pub auto_start: bool,
     pub selected_market: MarketId,
     pub chart_window: ChartWindow,
+    #[serde(default)]
+    pub chart_style: ChartStyle,
     pub alerts: Vec<Alert>,
     #[serde(default)]
     pub session_alerts: Vec<SessionAlert>,
@@ -852,6 +885,7 @@ impl Default for AppConfig {
             auto_start: false,
             selected_market: MarketId::London,
             chart_window: ChartWindow::Hour4,
+            chart_style: ChartStyle::Area,
             alerts: Vec::new(),
             session_alerts: Vec::new(),
             events: Vec::new(),

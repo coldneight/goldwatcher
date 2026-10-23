@@ -1,6 +1,6 @@
 [package]
 name = "gold-watcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89"
 description = "金瞳 GoldWatcher - 全球黄金市场实时监控与开收盘/价格告警工具"

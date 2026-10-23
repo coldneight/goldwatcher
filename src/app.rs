@@ -13,8 +13,8 @@ use crate::alerts;
 use crate::data::{FeedEvent, FeedSnapshot, FeedWorker, HistoryPayload};
 use crate::model::{
     beijing_tz, fmt_num, fmt_pct, format_threshold, now_beijing, Alert, AlertMetric, AlertScope,
-    AppConfig, ChartWindow, Direction, FxRates, HistoryStore, MarketId, MarketMetrics, PricePoint,
-    Quote, SessionAlert, SessionId,
+    AppConfig, ChartStyle, ChartWindow, Direction, FxRates, HistoryStore, MarketId, MarketMetrics,
+    PricePoint, Quote, SessionAlert, SessionId,
 };
 use crate::notify;
 use crate::storage::{self, Paths};
@@ -25,6 +25,29 @@ enum RightTab {
     Alerts,
     Sessions,
     Events,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutMode {
+    ThreeColumn,
+    TwoColumn,
+    Stacked,
+}
+
+impl LayoutMode {
+    fn for_size(width: f32, height: f32) -> Self {
+        let ratio = width / height.max(1.0);
+        if height < 680.0 {
+            return Self::Stacked;
+        }
+        if width >= 1250.0 && ratio >= 1.12 {
+            Self::ThreeColumn
+        } else if width >= 980.0 && ratio >= 0.90 {
+            Self::TwoColumn
+        } else {
+            Self::Stacked
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +256,8 @@ pub struct GoldWatcherApp {
     last_history_save: Instant,
     last_session_check: Instant,
     session_states: HashMap<SessionId, bool>,
+    layout_mode: LayoutMode,
+    show_alert_drawer: bool,
     capture: Option<CaptureState>,
     dirty: bool,
 }
@@ -336,6 +361,8 @@ impl GoldWatcherApp {
             last_history_save: Instant::now(),
             last_session_check: Instant::now(),
             session_states,
+            layout_mode: LayoutMode::ThreeColumn,
+            show_alert_drawer: false,
             capture,
             dirty: false,
         }
@@ -818,6 +845,14 @@ impl eframe::App for GoldWatcherApp {
         self.maybe_save();
         self.capture_frame(ctx);
 
+        let screen = ctx.screen_rect().size();
+        self.layout_mode = LayoutMode::for_size(screen.x - 44.0, screen.y - 28.0);
+        if self.layout_mode != LayoutMode::TwoColumn {
+            self.show_alert_drawer = false;
+        } else if std::env::var_os("GOLDWATCHER_OPEN_ALERTS").is_some() {
+            self.show_alert_drawer = true;
+        }
+
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
@@ -832,6 +867,7 @@ impl eframe::App for GoldWatcherApp {
                 self.status_bar(ui);
             });
 
+        self.alert_drawer(ctx);
         self.alert_editor_modal(ctx);
         self.session_editor_modal(ctx);
         self.settings_modal(ctx);
@@ -881,6 +917,21 @@ impl GoldWatcherApp {
         }
     }
 
+    fn alert_drawer(&mut self, ctx: &egui::Context) {
+        if !self.show_alert_drawer || self.layout_mode != LayoutMode::TwoColumn {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        let width = 370.0_f32.min(screen.width() - 24.0);
+        let height = (screen.height() - 96.0).max(420.0);
+        egui::Area::new(Id::new("alerts-drawer"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(screen.right() - width - 16.0, 76.0))
+            .show(ctx, |ui| {
+                self.right_column(ui, width, height, true);
+            });
+    }
+
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let logo = egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(42.0));
@@ -908,6 +959,12 @@ impl GoldWatcherApp {
                 if ui.add(theme::primary_button("↻ 刷新")).clicked() {
                     self.worker.refresh_now();
                     self.feed.last_attempt_instant = Some(Instant::now());
+                }
+                if self.layout_mode == LayoutMode::TwoColumn {
+                    let label = format!("告警 {}", self.total_active_alerts());
+                    if ui.add(theme::ghost_button(label)).clicked() {
+                        self.show_alert_drawer = !self.show_alert_drawer;
+                    }
                 }
                 let age = self
                     .quotes
@@ -950,40 +1007,87 @@ impl GoldWatcherApp {
 
     fn body(&mut self, ui: &mut egui::Ui) {
         let avail = ui.available_size();
-        let left_w = 326.0;
-        let right_w = 374.0;
-        let gap = 14.0;
-        let body_h = (avail.y - 30.0).max(430.0);
-        let center_w = (avail.x - left_w - right_w - gap * 2.0).max(380.0);
-
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::new(left_w, body_h),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    ui.set_width(left_w);
-                    self.left_column(ui, body_h);
-                },
-            );
-            ui.add_space(gap);
-            ui.allocate_ui_with_layout(
-                Vec2::new(center_w, body_h),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    ui.set_width(center_w);
-                    self.center_column(ui, center_w, body_h);
-                },
-            );
-            ui.add_space(gap);
-            ui.allocate_ui_with_layout(
-                Vec2::new(right_w, body_h),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    ui.set_width(right_w);
-                    self.right_column(ui, right_w, body_h);
-                },
-            );
-        });
+        let body_h = (avail.y - 30.0).max(400.0);
+        match self.layout_mode {
+            LayoutMode::ThreeColumn => {
+                let left_w = 292.0;
+                let right_w = 340.0;
+                let gap = 12.0;
+                let center_w = (avail.x - left_w - right_w - gap * 2.0).max(520.0);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(left_w, body_h),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(left_w);
+                            self.left_column(ui, body_h);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(center_w, body_h),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(center_w);
+                            self.center_column(ui, center_w, body_h);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(right_w, body_h),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(right_w);
+                            self.right_column(ui, right_w, body_h, false);
+                        },
+                    );
+                });
+            }
+            LayoutMode::TwoColumn => {
+                let left_w = 276.0;
+                let gap = 12.0;
+                let center_w = (avail.x - left_w - gap).max(560.0);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(left_w, body_h),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(left_w);
+                            self.left_column(ui, body_h);
+                        },
+                    );
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(center_w, body_h),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(center_w);
+                            self.center_column(ui, center_w, body_h);
+                        },
+                    );
+                });
+            }
+            LayoutMode::Stacked => {
+                egui::ScrollArea::vertical()
+                    .id_salt("stacked-dashboard")
+                    .auto_shrink([false, false])
+                    .max_height(body_h)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let width = ui.available_width();
+                        let chart_h = (width * 0.62).clamp(360.0, 600.0);
+                        self.chart_section(ui, chart_h);
+                        ui.add_space(12.0);
+                        self.metrics_row(ui);
+                        ui.add_space(12.0);
+                        self.sessions_card(ui);
+                        ui.add_space(12.0);
+                        self.watchlist_card(ui, 356.0);
+                        ui.add_space(12.0);
+                        self.right_column(ui, width, 560.0, false);
+                    });
+            }
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1043,14 +1147,31 @@ impl GoldWatcherApp {
         );
         ui.add_space(12.0);
         let list_h = (height - hero_h - 12.0).max(240.0);
+        self.watchlist_card(ui, list_h);
+    }
+
+    fn watchlist_card(&mut self, ui: &mut egui::Ui, height: f32) {
         ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), list_h),
+            Vec2::new(ui.available_width(), height),
             Layout::top_down(Align::Min),
             |ui| {
                 theme::card().show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(list_h - 32.0);
+                    ui.set_min_height(height - 32.0);
                     self.watchlist(ui);
+                });
+            },
+        );
+    }
+
+    fn chart_section(&mut self, ui: &mut egui::Ui, chart_h: f32) {
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), chart_h),
+            Layout::top_down(Align::Min),
+            |ui| {
+                theme::card().show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    self.chart_card(ui, chart_h);
                 });
             },
         );
@@ -1367,22 +1488,15 @@ impl GoldWatcherApp {
         });
     }
 
-    fn center_column(&mut self, ui: &mut egui::Ui, _width: f32, height: f32) {
+    fn center_column(&mut self, ui: &mut egui::Ui, width: f32, height: f32) {
         let metrics_h = 88.0;
         let sessions_h = 72.0;
         let gaps = 24.0;
-        let chart_h = (height - metrics_h - sessions_h - gaps).max(300.0);
+        let available = (height - metrics_h - sessions_h - gaps).max(300.0);
+        let width_cap = (width * 0.80).clamp(420.0, 650.0);
+        let chart_h = available.min(width_cap).max(300.0);
 
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), chart_h),
-            Layout::top_down(Align::Min),
-            |ui| {
-                theme::card().show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    self.chart_card(ui, chart_h);
-                });
-            },
-        );
+        self.chart_section(ui, chart_h);
         ui.add_space(12.0);
         self.metrics_row(ui);
         ui.add_space(12.0);
@@ -1457,6 +1571,7 @@ impl GoldWatcherApp {
             self.dirty = true;
         }
         ui.add_space(2.0);
+        let mut chosen_style = self.config.chart_style;
         ui.horizontal(|ui| {
             let price = quote
                 .as_ref()
@@ -1468,14 +1583,27 @@ impl GoldWatcherApp {
                     theme::change_chip(ui, pct, fmt_pct(pct));
                 }
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let source = quote
-                    .as_ref()
-                    .map(|q| q.source.clone())
-                    .unwrap_or_else(|| self.feed.source.clone());
-                ui.label(theme::tiny(source));
-            });
+            ui.add_space(4.0);
+            ui.label(theme::tiny("样式"));
+            for style in ChartStyle::ALL {
+                if style_button(ui, style, style == chosen_style) {
+                    chosen_style = style;
+                }
+            }
+            if ui.available_width() > 110.0 {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let source = quote
+                        .as_ref()
+                        .map(|q| q.source.clone())
+                        .unwrap_or_else(|| self.feed.source.clone());
+                    ui.add(egui::Label::new(theme::tiny(source)).truncate());
+                });
+            }
         });
+        if chosen_style != self.config.chart_style {
+            self.config.chart_style = chosen_style;
+            self.dirty = true;
+        }
         ui.add_space(4.0);
 
         let plot_h = (chart_h - 32.0 - 68.0 - 42.0).max(150.0);
@@ -1545,35 +1673,41 @@ impl GoldWatcherApp {
         market: MarketId,
         height: f32,
     ) {
+        let style = self.config.chart_style;
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let painter = ui.painter_at(rect);
         let plot = Rect::from_min_max(
-            Pos2::new(rect.left() + 2.0, rect.top() + 6.0),
-            Pos2::new(rect.right() - 56.0, rect.bottom() - 20.0),
+            Pos2::new(rect.left() + 8.0, rect.top() + 25.0),
+            Pos2::new(rect.right() - 64.0, rect.bottom() - 22.0),
         );
-        if plot.width() < 80.0 || plot.height() < 40.0 {
+        if plot.width() < 100.0 || plot.height() < 50.0 {
+            return;
+        }
+        painter.rect_filled(rect, 10.0, theme::alpha(theme::SURFACE_2, 45));
+
+        if points.len() < 2 {
+            draw_empty_chart(&painter, plot);
             return;
         }
 
-        if points.len() < 2 {
-            painter.text(
-                plot.center(),
-                Align2::CENTER_CENTER,
-                "正在积累本地分钟走势…",
-                FontId::proportional(11.0),
-                theme::MUTED,
-            );
-            return;
-        }
+        let last_price = points.last().map(|p| p.price).unwrap_or(0.0);
+        let first_price = points.first().map(|p| p.price).unwrap_or(last_price);
+        let reference = prev_close.unwrap_or(first_price);
+        let trend_up = last_price >= reference;
+        let trend_color = if trend_up { theme::GREEN } else { theme::RED };
+
         let (mut min, mut max) = min_max(points.iter().map(|p| p.price));
         if let Some(prev) = prev_close {
-            if prev > min * 0.9 && prev < max * 1.1 {
+            let range = (max - min).max(0.0001);
+            if style == ChartStyle::Baseline
+                || (prev >= min - range * 0.3 && prev <= max + range * 0.3)
+            {
                 min = min.min(prev);
                 max = max.max(prev);
             }
         }
-        let pad = ((max - min) * 0.12).max(0.0001);
+        let pad = ((max - min) * 0.10).max(0.0001);
         min -= pad;
         max += pad;
         let first_ts = points.first().map(|p| p.ts).unwrap_or(0);
@@ -1586,16 +1720,45 @@ impl GoldWatcherApp {
             plot.bottom() - t.clamp(0.0, 1.0) * plot.height()
         };
 
+        // Time grid + axis labels.
+        let x_ticks = if plot.width() > 430.0 { 4 } else { 3 };
+        for i in 0..=x_ticks {
+            let t = i as f32 / x_ticks as f32;
+            let ts = first_ts + ((last_ts - first_ts) as f32 * t) as i64;
+            let x = x_for(ts);
+            if i > 0 && i < x_ticks {
+                painter.line_segment(
+                    [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+                    Stroke::new(1.0_f32, theme::alpha(theme::BORDER_SOFT, 95)),
+                );
+            }
+            let align = if i == 0 {
+                Align2::LEFT_TOP
+            } else if i == x_ticks {
+                Align2::RIGHT_TOP
+            } else {
+                Align2::CENTER_TOP
+            };
+            painter.text(
+                Pos2::new(x, plot.bottom() + 6.0),
+                align,
+                beijing_clock(ts),
+                FontId::monospace(9.0),
+                theme::FAINT,
+            );
+        }
+
+        // Horizontal grid + price axis.
         for i in 0..=4 {
             let t = i as f32 / 4.0;
             let y = plot.top() + t * plot.height();
             painter.line_segment(
                 [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-                Stroke::new(1.0_f32, theme::alpha(theme::BORDER_SOFT, 150)),
+                Stroke::new(1.0_f32, theme::alpha(theme::BORDER_SOFT, 110)),
             );
             let value = max - (max - min) * t as f64;
             painter.text(
-                Pos2::new(plot.right() + 7.0, y),
+                Pos2::new(plot.right() + 6.0, y),
                 Align2::LEFT_CENTER,
                 axis_price(value, market, max - min),
                 FontId::monospace(8.5),
@@ -1603,6 +1766,41 @@ impl GoldWatcherApp {
             );
         }
 
+        let last_x = x_for(last_ts);
+        let last_y = y_for(last_price);
+
+        // Chart body by style.
+        match style {
+            ChartStyle::Area => {
+                let mesh = area_mesh(points, &x_for, &y_for, plot.bottom(), trend_color, 58);
+                painter.add(Shape::mesh(mesh));
+            }
+            ChartStyle::Line => {}
+            ChartStyle::Baseline => {
+                let baseline = prev_close.unwrap_or(reference);
+                let base_y = y_for(baseline).clamp(plot.top(), plot.bottom());
+                let green = area_mesh(points, &x_for, &y_for, base_y, theme::GREEN, 55);
+                let red = area_mesh(points, &x_for, &y_for, base_y, theme::RED, 55);
+                let above = Rect::from_min_max(plot.min, Pos2::new(plot.right(), base_y));
+                let below = Rect::from_min_max(Pos2::new(plot.left(), base_y), plot.max);
+                if above.height() > 1.0 {
+                    painter
+                        .with_clip_rect(above.intersect(plot))
+                        .add(Shape::mesh(green));
+                }
+                if below.height() > 1.0 {
+                    painter
+                        .with_clip_rect(below.intersect(plot))
+                        .add(Shape::mesh(red));
+                }
+            }
+            ChartStyle::Average => {
+                let mesh = area_mesh(points, &x_for, &y_for, plot.bottom(), theme::GOLD, 26);
+                painter.add(Shape::mesh(mesh));
+            }
+        }
+
+        // Previous close reference.
         if let Some(prev) = prev_close {
             if prev >= min && prev <= max {
                 let y = y_for(prev);
@@ -1610,69 +1808,170 @@ impl GoldWatcherApp {
                     &painter,
                     Pos2::new(plot.left(), y),
                     Pos2::new(plot.right(), y),
-                    theme::alpha(theme::GOLD, 90),
+                    theme::alpha(theme::MUTED, 110),
+                );
+                painter.text(
+                    Pos2::new(plot.left() + 5.0, y - 5.0),
+                    Align2::LEFT_BOTTOM,
+                    format!("昨收 {}", market.fmt_price(prev)),
+                    FontId::monospace(8.5),
+                    theme::alpha(theme::MUTED, 210),
                 );
             }
         }
 
-        let up = points.last().map(|p| p.price).unwrap_or(0.0)
-            >= points.first().map(|p| p.price).unwrap_or(0.0);
-        let line_color = if up { theme::GREEN } else { theme::RED };
-        let mut mesh = egui::Mesh::default();
-        for (i, p) in points.iter().enumerate() {
-            let x = x_for(p.ts);
-            let y = y_for(p.price);
-            mesh.colored_vertex(Pos2::new(x, y), theme::alpha(line_color, 58));
-            mesh.colored_vertex(Pos2::new(x, plot.bottom()), theme::alpha(line_color, 0));
-            if i > 0 {
-                let base = (i as u32 - 1) * 2;
-                mesh.add_triangle(base, base + 1, base + 2);
-                mesh.add_triangle(base + 1, base + 3, base + 2);
+        // Moving averages.
+        if style == ChartStyle::Average {
+            for (window, color) in [(300_i64, theme::GOLD), (1200_i64, theme::BLUE)] {
+                let ma = moving_average(points, window);
+                if ma.len() > 1 {
+                    let line: Vec<Pos2> = ma
+                        .iter()
+                        .map(|p| Pos2::new(x_for(p.ts), y_for(p.price)))
+                        .collect();
+                    painter.add(Shape::line(line, Stroke::new(1.35_f32, color)));
+                }
             }
         }
-        painter.add(Shape::mesh(mesh));
 
+        // Main price line, with a soft glow.
+        let price_color = if style == ChartStyle::Average {
+            theme::TEXT
+        } else {
+            trend_color
+        };
         let line: Vec<Pos2> = points
             .iter()
             .map(|p| Pos2::new(x_for(p.ts), y_for(p.price)))
             .collect();
         painter.add(Shape::line(
             line.clone(),
-            Stroke::new(2.0_f32, theme::alpha(line_color, 220)),
+            Stroke::new(6.0_f32, theme::alpha(price_color, 26)),
         ));
-        if let Some(last) = line.last() {
-            let t = ui.input(|i| i.time) as f32;
-            let pulse = 8.0 + (t * 2.0).sin() * 1.5;
-            painter.circle_filled(*last, pulse, theme::alpha(theme::GOLD, 26));
-            painter.circle_filled(*last, 3.0, theme::GOLD_BRIGHT);
+        painter.add(Shape::line(
+            line.clone(),
+            Stroke::new(1.9_f32, theme::alpha(price_color, 235)),
+        ));
+
+        // High / low annotations.
+        if let Some(high) = points.iter().max_by(|a, b| a.price.total_cmp(&b.price)) {
+            if (high.ts - last_ts).abs() > 1 || (high.price - last_price).abs() > f64::EPSILON {
+                let x = x_for(high.ts).clamp(plot.left() + 4.0, plot.right() - 4.0);
+                painter.text(
+                    Pos2::new(x, y_for(high.price) - 10.0),
+                    Align2::CENTER_BOTTOM,
+                    format!("高 {}", market.fmt_price(high.price)),
+                    FontId::monospace(8.0),
+                    theme::alpha(theme::MUTED, 180),
+                );
+            }
+        }
+        if let Some(low) = points.iter().min_by(|a, b| a.price.total_cmp(&b.price)) {
+            if (low.ts - last_ts).abs() > 1 || (low.price - last_price).abs() > f64::EPSILON {
+                let x = x_for(low.ts).clamp(plot.left() + 4.0, plot.right() - 4.0);
+                painter.text(
+                    Pos2::new(x, y_for(low.price) + 9.0),
+                    Align2::CENTER_TOP,
+                    format!("低 {}", market.fmt_price(low.price)),
+                    FontId::monospace(8.0),
+                    theme::alpha(theme::MUTED, 180),
+                );
+            }
         }
 
-        for i in 0..=2 {
-            let t = i as f32 / 2.0;
-            let ts = first_ts + ((last_ts - first_ts) as f32 * t) as i64;
-            let x = x_for(ts);
-            let label = beijing_clock(ts);
-            let align = if i == 0 {
-                Align2::LEFT_TOP
-            } else if i == 2 {
-                Align2::RIGHT_TOP
-            } else {
-                Align2::CENTER_TOP
-            };
-            painter.text(
-                Pos2::new(x, plot.bottom() + 5.0),
-                align,
-                label,
-                FontId::monospace(9.0),
-                theme::FAINT,
-            );
+        // Latest price guide + right-side badge.
+        dashed_line(
+            &painter,
+            Pos2::new(plot.left(), last_y),
+            Pos2::new(plot.right(), last_y),
+            theme::alpha(price_color, 110),
+        );
+        let pulse = 8.0 + (ui.input(|i| i.time) as f32 * 2.0).sin() * 1.5;
+        painter.circle_filled(
+            Pos2::new(last_x, last_y),
+            pulse,
+            theme::alpha(price_color, 24),
+        );
+        painter.circle_filled(Pos2::new(last_x, last_y), 3.2, theme::GOLD_BRIGHT);
+        let badge = Rect::from_min_size(
+            Pos2::new(plot.right() + 3.0, last_y - 8.0),
+            Vec2::new(58.0, 16.0),
+        );
+        painter.rect_filled(badge, 4.0, price_color);
+        painter.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            market.fmt_price(last_price),
+            FontId::monospace(8.0),
+            Color32::from_rgb(12, 17, 23),
+        );
+
+        // Style legend.
+        let legend_y = rect.top() + 5.0;
+        match style {
+            ChartStyle::Average => {
+                let ma5 = moving_average(points, 300);
+                let ma20 = moving_average(points, 1200);
+                let mut x = plot.left();
+                for (label, color, value) in [
+                    ("MA5", theme::GOLD, ma5.last().map(|p| p.price)),
+                    ("MA20", theme::BLUE, ma20.last().map(|p| p.price)),
+                ] {
+                    painter.line_segment(
+                        [
+                            Pos2::new(x, legend_y + 5.0),
+                            Pos2::new(x + 12.0, legend_y + 5.0),
+                        ],
+                        Stroke::new(1.5_f32, color),
+                    );
+                    painter.text(
+                        Pos2::new(x + 16.0, legend_y),
+                        Align2::LEFT_TOP,
+                        format!(
+                            "{} {}",
+                            label,
+                            value
+                                .map(|v| fmt_num(v, 2))
+                                .unwrap_or_else(|| "—".to_owned())
+                        ),
+                        FontId::monospace(8.0),
+                        theme::alpha(color, 220),
+                    );
+                    x += 92.0;
+                }
+            }
+            ChartStyle::Baseline => {
+                let pct = prev_close
+                    .filter(|p| *p > 0.0)
+                    .map(|p| (last_price - p) / p * 100.0);
+                painter.text(
+                    Pos2::new(plot.left(), legend_y),
+                    Align2::LEFT_TOP,
+                    format!(
+                        "现价 {}  {}",
+                        market.fmt_price(last_price),
+                        pct.map(fmt_pct).unwrap_or_else(|| "—".to_owned())
+                    ),
+                    FontId::monospace(8.5),
+                    trend_color,
+                );
+            }
+            ChartStyle::Area | ChartStyle::Line => {
+                painter.text(
+                    Pos2::new(plot.left(), legend_y),
+                    Align2::LEFT_TOP,
+                    style.description(),
+                    FontId::proportional(8.5),
+                    theme::alpha(theme::MUTED, 180),
+                );
+            }
         }
 
+        // Hover crosshair + tooltip.
         if let Some(pointer) = response.hover_pos() {
             if plot.contains(pointer) {
-                let x = pointer.x.clamp(plot.left(), plot.right());
-                let target_ts =
-                    first_ts + (((x - plot.left()) / plot.width().max(1.0)) as f64 * span) as i64;
+                let target_ts = first_ts
+                    + (((pointer.x - plot.left()) / plot.width().max(1.0)) as f64 * span) as i64;
                 let nearest = points
                     .iter()
                     .min_by_key(|p| (p.ts - target_ts).abs())
@@ -1684,41 +1983,73 @@ impl GoldWatcherApp {
                         &painter,
                         Pos2::new(px, plot.top()),
                         Pos2::new(px, plot.bottom()),
-                        theme::alpha(theme::MUTED, 100),
+                        theme::alpha(theme::MUTED, 90),
                     );
-                    painter.circle_filled(Pos2::new(px, py), 4.0, theme::GOLD_BRIGHT);
-                    let label = format!(
-                        "{}   {}",
-                        beijing_clock(point.ts),
-                        market.fmt_price(point.price)
+                    dashed_line(
+                        &painter,
+                        Pos2::new(plot.left(), py),
+                        Pos2::new(plot.right(), py),
+                        theme::alpha(theme::MUTED, 70),
                     );
-                    let galley =
-                        painter.layout_no_wrap(label, FontId::monospace(10.0), theme::TEXT);
-                    let box_size = galley.size() + Vec2::new(14.0, 8.0);
-                    let mut pos = Pos2::new(pointer.x + 12.0, plot.top() + 8.0);
-                    if pos.x + box_size.x > plot.right() {
-                        pos.x = pointer.x - box_size.x - 12.0;
+                    painter.circle_filled(Pos2::new(px, py), 4.5, theme::BG);
+                    painter.circle_filled(Pos2::new(px, py), 2.8, theme::GOLD_BRIGHT);
+
+                    let pct = prev_close
+                        .filter(|p| *p > 0.0)
+                        .map(|p| (point.price - p) / p * 100.0);
+                    let mut lines = vec![
+                        format!(
+                            "{}  {}",
+                            beijing_clock(point.ts),
+                            market.fmt_price(point.price)
+                        ),
+                        pct.map(fmt_pct).unwrap_or_else(|| "—".to_owned()),
+                    ];
+                    if style == ChartStyle::Average {
+                        let ma5 = moving_average(points, 300);
+                        let ma20 = moving_average(points, 1200);
+                        if let (Some(a), Some(b)) = (ma5.last(), ma20.last()) {
+                            lines.push(format!(
+                                "MA5 {}   MA20 {}",
+                                fmt_num(a.price, 2),
+                                fmt_num(b.price, 2)
+                            ));
+                        }
                     }
-                    let box_rect = Rect::from_min_size(pos, box_size);
-                    painter.rect_filled(
-                        box_rect,
-                        CornerRadius::same(6),
-                        theme::alpha(theme::SURFACE_3, 245),
-                    );
+                    let line_h = 13.0_f32;
+                    let box_w = 160.0_f32;
+                    let box_h = 10.0 + line_h * lines.len() as f32;
+                    let mut pos = Pos2::new(pointer.x + 14.0, plot.top() + 8.0);
+                    if pos.x + box_w > plot.right() {
+                        pos.x = pointer.x - box_w - 14.0;
+                    }
+                    let box_rect = Rect::from_min_size(pos, Vec2::new(box_w, box_h));
+                    painter.rect_filled(box_rect, 7.0, theme::alpha(theme::SURFACE_3, 248));
                     painter.rect_stroke(
                         box_rect,
-                        CornerRadius::same(6),
+                        CornerRadius::same(7),
                         Stroke::new(1.0_f32, theme::BORDER),
                         egui::StrokeKind::Inside,
                     );
-                    painter.galley(box_rect.min + Vec2::new(7.0, 4.0), galley, theme::TEXT);
+                    for (index, line) in lines.iter().enumerate() {
+                        painter.text(
+                            box_rect.min + Vec2::new(8.0, 5.0 + index as f32 * line_h),
+                            Align2::LEFT_TOP,
+                            line,
+                            FontId::monospace(8.5),
+                            if index == 1 {
+                                pct.map(theme::direction_color).unwrap_or(theme::MUTED)
+                            } else {
+                                theme::TEXT
+                            },
+                        );
+                    }
                 }
             }
         }
     }
 
     fn metrics_row(&mut self, ui: &mut egui::Ui) {
-        let width = (ui.available_width() - 30.0) / 4.0;
         let metrics = self.metrics.clone();
         let london = self.quotes.get(&MarketId::London);
         let basis_text = metrics
@@ -1783,14 +2114,23 @@ impl GoldWatcherApp {
             ("美元 / 人民币", fx_text, fx_sub, theme::GOLD),
             ("伦敦金今日振幅", amp_text, amp_sub, theme::BLUE),
         ];
-        ui.horizontal(|ui| {
-            for (i, (label, value, sub, color)) in cards.into_iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(10.0);
+        let columns = if ui.available_width() >= 560.0 { 4 } else { 2 };
+        let gap = 10.0;
+        let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
+        let rows: Vec<_> = cards.chunks(columns).collect();
+        for (row_index, row) in rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                for (i, (label, value, sub, color)) in row.iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(gap);
+                    }
+                    metric_card(ui, width, label, value, sub, *color);
                 }
-                metric_card(ui, width, label, &value, &sub, color);
+            });
+            if row_index + 1 < rows.len() {
+                ui.add_space(8.0);
             }
-        });
+        }
     }
 
     fn sessions_card(&mut self, ui: &mut egui::Ui) {
@@ -1856,7 +2196,7 @@ impl GoldWatcherApp {
         });
     }
 
-    fn right_column(&mut self, ui: &mut egui::Ui, _width: f32, height: f32) {
+    fn right_column(&mut self, ui: &mut egui::Ui, _width: f32, height: f32, drawer: bool) {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), height),
             Layout::top_down(Align::Min),
@@ -1882,6 +2222,9 @@ impl GoldWatcherApp {
                                 },
                                 true,
                             );
+                            if drawer && ui.add(theme::ghost_button("×")).clicked() {
+                                self.show_alert_drawer = false;
+                            }
                         });
                     });
                     ui.add_space(2.0);
@@ -3282,6 +3625,105 @@ fn metric_card(ui: &mut egui::Ui, width: f32, label: &str, value: &str, sub: &st
     });
 }
 
+fn area_mesh<FX, FY>(
+    points: &[PricePoint],
+    x_for: &FX,
+    y_for: &FY,
+    bottom: f32,
+    color: Color32,
+    alpha_top: u8,
+) -> egui::Mesh
+where
+    FX: Fn(i64) -> f32,
+    FY: Fn(f64) -> f32,
+{
+    let mut mesh = egui::Mesh::default();
+    for (i, point) in points.iter().enumerate() {
+        let x = x_for(point.ts);
+        mesh.colored_vertex(
+            Pos2::new(x, y_for(point.price)),
+            theme::alpha(color, alpha_top),
+        );
+        mesh.colored_vertex(Pos2::new(x, bottom), theme::alpha(color, 0));
+        if i > 0 {
+            let base = (i as u32 - 1) * 2;
+            mesh.add_triangle(base, base + 1, base + 2);
+            mesh.add_triangle(base + 1, base + 3, base + 2);
+        }
+    }
+    mesh
+}
+
+fn moving_average(points: &[PricePoint], window_secs: i64) -> Vec<PricePoint> {
+    let mut out = Vec::with_capacity(points.len());
+    let mut start = 0usize;
+    let mut sum = 0.0f64;
+    for (index, point) in points.iter().enumerate() {
+        sum += point.price;
+        while start < index && points[start].ts < point.ts - window_secs {
+            sum -= points[start].price;
+            start += 1;
+        }
+        let count = (index + 1 - start).max(1) as f64;
+        out.push(PricePoint::new(point.ts, sum / count));
+    }
+    out
+}
+
+fn draw_empty_chart(painter: &egui::Painter, plot: Rect) {
+    for i in 0..=4 {
+        let y = plot.top() + plot.height() * i as f32 / 4.0;
+        painter.line_segment(
+            [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+            Stroke::new(1.0_f32, theme::alpha(theme::BORDER_SOFT, 100)),
+        );
+    }
+    for i in 0..=3 {
+        let x = plot.left() + plot.width() * i as f32 / 3.0;
+        painter.line_segment(
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
+            Stroke::new(1.0_f32, theme::alpha(theme::BORDER_SOFT, 70)),
+        );
+    }
+    painter.text(
+        plot.center(),
+        Align2::CENTER_CENTER,
+        "等待行情数据",
+        FontId::proportional(12.0),
+        theme::MUTED,
+    );
+    painter.text(
+        plot.center() + Vec2::new(0.0, 18.0),
+        Align2::CENTER_CENTER,
+        "数据接入后自动绘制走势",
+        FontId::proportional(9.0),
+        theme::FAINT,
+    );
+}
+
+fn style_button(ui: &mut egui::Ui, style: ChartStyle, selected: bool) -> bool {
+    let button = egui::Button::new(RichText::new(style.label()).size(9.5).color(if selected {
+        theme::GOLD
+    } else {
+        theme::MUTED
+    }))
+    .fill(if selected {
+        theme::alpha(theme::GOLD, 20)
+    } else {
+        Color32::TRANSPARENT
+    })
+    .stroke(Stroke::new(
+        1.0_f32,
+        if selected {
+            theme::alpha(theme::GOLD, 70)
+        } else {
+            theme::BORDER_SOFT
+        },
+    ))
+    .corner_radius(6);
+    ui.add(button).on_hover_text(style.description()).clicked()
+}
+
 fn theme_money(value: f64) -> String {
     format!("${}", fmt_num(value, 2))
 }
@@ -3360,5 +3802,22 @@ fn session_range_open(now: DateTime<chrono::FixedOffset>, start_min: u32, end_mi
                 | chrono::Weekday::Sat
         ) && mins <= end_min;
         evening || morning
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_average_uses_time_window_not_total_length() {
+        let points: Vec<PricePoint> = (0..6)
+            .map(|index| PricePoint::new(index * 60, (index + 1) as f64))
+            .collect();
+        let ma = moving_average(&points, 120);
+        assert_eq!(ma.len(), 6);
+        assert!((ma[0].price - 1.0).abs() < 1e-9);
+        // 4, 5, 6 are within the last two minutes.
+        assert!((ma[5].price - 5.0).abs() < 1e-9);
     }
 }
