@@ -1,5 +1,7 @@
 # 金瞳 GoldWatcher
 
+[![build](https://github.com/coldneight/goldwatcher/actions/workflows/build.yml/badge.svg)](https://github.com/coldneight/goldwatcher/actions/workflows/build.yml)
+
 > 全球黄金市场实时监控与开收盘 / 价格告警工具  
 > A desktop gold market monitor with price and session alerts, built in Rust.
 
@@ -8,6 +10,12 @@
 金瞳 GoldWatcher 是一个面向个人投资者的轻量桌面工具。它同时盯住伦敦现货、纽约 COMEX、上海黄金交易所和上海期货交易所的黄金报价，并把跨市场基差、上海金溢价、人民币汇率、全球交易时段集中在一个界面里。
 
 数据时效优先：启动后并**并发**请求秒级现货源与新浪多市场行情，按数据源时间戳选择更新的一条；默认每 **15 秒**刷新，可切换 15 / 60 / 120 / 300 秒。
+
+## 下载
+
+- [GitHub Releases](https://github.com/coldneight/goldwatcher/releases) 提供 Linux x86_64 与 Windows x86_64 的 v0.1.0 压缩包。
+- Linux 包内附 `install.sh`，Windows 包内附 `install.ps1`，用于创建桌面快捷方式。
+- 也可以从源码构建，见下文。
 
 ## 功能
 
