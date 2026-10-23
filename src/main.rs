@@ -25,7 +25,7 @@ fn main() -> eframe::Result<()> {
         .with_title("金瞳 GoldWatcher · 全球黄金监控")
         .with_app_id("io.github.goldwatcher")
         .with_inner_size([1360.0, 850.0])
-        .with_min_inner_size([1180.0, 760.0])
+        .with_min_inner_size([920.0, 640.0])
         .with_icon(Arc::new(icon.clone()));
 
     let options = eframe::NativeOptions {
