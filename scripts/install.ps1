@@ -1,4 +1,4 @@
-# 金瞳 GoldWatcher — Windows 当前用户安装脚本
+﻿# 金瞳 GoldWatcher — Windows 当前用户安装脚本
 # 在 PowerShell 中运行：powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 $ErrorActionPreference = "Stop"
 
